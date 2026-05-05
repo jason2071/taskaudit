@@ -1,6 +1,8 @@
 # taskaudit
 
-ตรวจ code ของ Go project ว่าทำครบตาม checklist หรือยัง — ใช้ Claude AI วิเคราะห์ให้
+ตรวจ code ของ Go project ว่าทำครบตาม checklist หรือยัง — ใช้ AI วิเคราะห์ให้
+
+รองรับ: **Anthropic (Claude)**, **OpenAI (GPT)**, **Google (Gemini)**, **OpenRouter (model อะไรก็ได้)**
 
 ## เริ่มใช้งาน
 
@@ -9,8 +11,11 @@
 go build -o taskaudit
 sudo mv taskaudit /usr/local/bin/
 
-# ตั้ง API key (ใส่ใน .zshrc ก็ได้)
-export ANTHROPIC_API_KEY="sk-ant-..."
+# ตั้ง API key ตาม provider ที่ใช้ (ใส่ใน .zshrc ก็ได้)
+export ANTHROPIC_API_KEY="sk-ant-..."       # Anthropic (default)
+export OPENAI_API_KEY="sk-..."              # OpenAI
+export GEMINI_API_KEY="AI..."               # Google Gemini
+export OPENROUTER_API_KEY="sk-or-v1-..."    # OpenRouter
 ```
 
 ## Quick Start
@@ -195,6 +200,84 @@ taskaudit -task "Notification" -include "handler,service" -json \
    [MEDIUM] Logger context ขาด trace ID
 ```
 
+## เลือก AI Provider
+
+Default ใช้ Anthropic (Claude). เปลี่ยนได้ด้วย `-provider` และ `-model`:
+
+| Provider | Flag | Default Model | Env Variable |
+|----------|------|---------------|--------------|
+| Anthropic | `-provider anthropic` | `claude-sonnet-4-20250514` | `ANTHROPIC_API_KEY` |
+| OpenAI | `-provider openai` | `gpt-4o` | `OPENAI_API_KEY` |
+| Google Gemini | `-provider gemini` | `gemini-2.5-flash` | `GEMINI_API_KEY` |
+| OpenRouter | `-provider openrouter` | `anthropic/claude-sonnet-4` | `OPENROUTER_API_KEY` |
+
+### ใช้ OpenAI (GPT-4o)
+
+```bash
+export OPENAI_API_KEY="sk-..."
+
+taskaudit -task "User CRUD" \
+  -provider openai \
+  -include "handler,service,repository,model"
+
+# เลือก model อื่น
+taskaudit -task "User CRUD" \
+  -provider openai \
+  -model gpt-4o-mini \
+  -include "handler,service,repository,model"
+```
+
+### ใช้ Google Gemini
+
+```bash
+export GEMINI_API_KEY="AI..."
+
+taskaudit -task "User CRUD" \
+  -provider gemini \
+  -include "handler,service,repository,model"
+
+# เลือก model อื่น
+taskaudit -task "User CRUD" \
+  -provider gemini \
+  -model gemini-2.5-pro \
+  -include "handler,service,repository,model"
+```
+
+### ใช้ OpenRouter (เข้าถึง model จากทุกเจ้าผ่าน API เดียว)
+
+```bash
+export OPENROUTER_API_KEY="sk-or-v1-..."
+
+# Default: anthropic/claude-sonnet-4
+taskaudit -task "User CRUD" \
+  -provider openrouter \
+  -include "handler,service,repository,model"
+
+# เลือก model จากเจ้าไหนก็ได้
+taskaudit -task "User CRUD" \
+  -provider openrouter \
+  -model openai/gpt-4o \
+  -include "handler,service,repository,model"
+
+taskaudit -task "User CRUD" \
+  -provider openrouter \
+  -model google/gemini-2.5-pro \
+  -include "handler,service,repository,model"
+
+taskaudit -task "User CRUD" \
+  -provider openrouter \
+  -model meta-llama/llama-4-maverick \
+  -include "handler,service,repository,model"
+```
+
+### เปลี่ยน Claude model
+
+```bash
+taskaudit -task "User CRUD" \
+  -model claude-opus-4-20250514 \
+  -include "handler,service,repository,model"
+```
+
 ## Flags ทั้งหมด
 
 | Flag | Default | คำอธิบาย |
@@ -210,6 +293,8 @@ taskaudit -task "Notification" -include "handler,service" -json \
 | `-md` | - | Export Markdown ไปที่ path |
 | `-open` | `false` | เปิด HTML ใน browser (ใช้คู่ `-html`) |
 | `-v` | `false` | แสดงรายละเอียดการ scan |
+| `-provider` | `anthropic` | AI provider: `anthropic`, `openai`, `gemini`, `openrouter` |
+| `-model` | provider default | Model name (override default) |
 
 ## Tips
 

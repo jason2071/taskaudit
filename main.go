@@ -24,12 +24,45 @@ import (
 )
 
 const (
-	apiURL       = "https://api.anthropic.com/v1/messages"
-	model        = "claude-sonnet-4-20250514"
 	maxTokens    = 4000
 	apiTimeout   = 120 * time.Second
 	maxFileBytes = 100 * 1024 // 100KB per file - skip ที่ใหญ่เกิน
 )
+
+// Provider configurations
+type provider struct {
+	name       string
+	apiURL     string
+	envKey     string
+	defaultMod string
+}
+
+var providers = map[string]provider{
+	"anthropic": {
+		name:       "anthropic",
+		apiURL:     "https://api.anthropic.com/v1/messages",
+		envKey:     "ANTHROPIC_API_KEY",
+		defaultMod: "claude-sonnet-4-20250514",
+	},
+	"openai": {
+		name:       "openai",
+		apiURL:     "https://api.openai.com/v1/chat/completions",
+		envKey:     "OPENAI_API_KEY",
+		defaultMod: "gpt-4o",
+	},
+	"gemini": {
+		name:       "gemini",
+		apiURL:     "https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent",
+		envKey:     "GEMINI_API_KEY",
+		defaultMod: "gemini-2.5-flash",
+	},
+	"openrouter": {
+		name:       "openrouter",
+		apiURL:     "https://openrouter.ai/api/v1/chat/completions",
+		envKey:     "OPENROUTER_API_KEY",
+		defaultMod: "anthropic/claude-sonnet-4",
+	},
+}
 
 // Default folders ที่จะสแกนตาม Go clean architecture layout
 var defaultIncludeDirs = []string{
@@ -59,6 +92,8 @@ type config struct {
 	htmlPath      string
 	mdPath        string
 	verbose       bool
+	providerName  string
+	modelName     string
 }
 
 type codeFile struct {
@@ -131,6 +166,8 @@ func parseFlags() *config {
 	flag.StringVar(&cfg.htmlPath, "html", "", "Export HTML report to path (e.g. -html ./audit.html)")
 	flag.StringVar(&cfg.mdPath, "md", "", "Export Markdown report to path (e.g. -md ./audit.md)")
 	flag.BoolVar(&cfg.verbose, "v", false, "Verbose output")
+	flag.StringVar(&cfg.providerName, "provider", "anthropic", "AI provider: anthropic, openai, gemini, openrouter")
+	flag.StringVar(&cfg.modelName, "model", "", "Model name (default: provider's default model)")
 	flag.Parse()
 
 	if cfg.taskTitle == "" {
@@ -138,13 +175,26 @@ func parseFlags() *config {
 		flag.Usage()
 		os.Exit(1)
 	}
+
+	// Validate provider
+	if _, ok := providers[cfg.providerName]; !ok {
+		fmt.Fprintf(os.Stderr, "❌ unknown provider: %s (supported: anthropic, openai, gemini, openrouter)\n", cfg.providerName)
+		os.Exit(1)
+	}
+
 	return cfg
 }
 
 func run(ctx context.Context, cfg *config) error {
-	apiKey := os.Getenv("ANTHROPIC_API_KEY")
+	prov := providers[cfg.providerName]
+	apiKey := os.Getenv(prov.envKey)
 	if apiKey == "" {
-		return fmt.Errorf("ANTHROPIC_API_KEY environment variable is required")
+		return fmt.Errorf("%s environment variable is required", prov.envKey)
+	}
+
+	// Resolve model name
+	if cfg.modelName == "" {
+		cfg.modelName = prov.defaultMod
 	}
 
 	// 1. Load checklist
@@ -171,8 +221,8 @@ func run(ctx context.Context, cfg *config) error {
 		}
 	}
 
-	// 3. Call Claude API
-	fmt.Println("🔍 Auditing code with Claude...")
+	// 3. Call AI API
+	fmt.Printf("🔍 Auditing code with %s (%s)...\n", cfg.providerName, cfg.modelName)
 	result, err := auditCode(ctx, apiKey, cfg, checklist, files)
 	if err != nil {
 		return fmt.Errorf("audit: %w", err)
@@ -340,63 +390,34 @@ func matchesAnyPath(relPath string, paths []string) bool {
 	return false
 }
 
-// auditCode calls Claude API with the task context, checklist and code files,
+// auditCode calls AI provider API with the task context, checklist and code files,
 // then parses the JSON response.
 func auditCode(ctx context.Context, apiKey string, cfg *config, checklist []checklistItem, files []codeFile) (*auditResult, error) {
 	prompt := buildPrompt(cfg, checklist, files)
 
-	reqBody := apiRequest{
-		Model:     model,
-		MaxTokens: maxTokens,
-		Messages:  []apiMessage{{Role: "user", Content: prompt}},
-	}
-
-	bodyBytes, err := json.Marshal(reqBody)
-	if err != nil {
-		return nil, fmt.Errorf("marshal request: %w", err)
-	}
-
 	ctx, cancel := context.WithTimeout(ctx, apiTimeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, "POST", apiURL, bytes.NewReader(bodyBytes))
+	var text string
+	var err error
+
+	switch cfg.providerName {
+	case "openai":
+		text, err = callOpenAI(ctx, apiKey, cfg.modelName, prompt)
+	case "openrouter":
+		text, err = callOpenRouter(ctx, apiKey, cfg.modelName, prompt)
+	case "gemini":
+		text, err = callGemini(ctx, apiKey, cfg.modelName, prompt)
+	default:
+		text, err = callAnthropic(ctx, apiKey, cfg.modelName, prompt)
+	}
+
 	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-api-key", apiKey)
-	req.Header.Set("anthropic-version", "2023-06-01")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("call API: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read response: %w", err)
-	}
-
-	var apiResp apiResponse
-	if err := json.Unmarshal(respBytes, &apiResp); err != nil {
-		return nil, fmt.Errorf("parse response: %w (body: %s)", err, string(respBytes))
-	}
-
-	if apiResp.Error != nil {
-		return nil, fmt.Errorf("API error: %s - %s", apiResp.Error.Type, apiResp.Error.Message)
-	}
-
-	// รวม text จากทุก content block
-	var sb strings.Builder
-	for _, c := range apiResp.Content {
-		if c.Type == "text" {
-			sb.WriteString(c.Text)
-		}
+		return nil, err
 	}
 
 	// Strip markdown code fences ถ้ามี
-	text := strings.TrimSpace(sb.String())
+	text = strings.TrimSpace(text)
 	text = strings.TrimPrefix(text, "```json")
 	text = strings.TrimPrefix(text, "```")
 	text = strings.TrimSuffix(text, "```")
@@ -408,6 +429,259 @@ func auditCode(ctx context.Context, apiKey string, cfg *config, checklist []chec
 	}
 
 	return &result, nil
+}
+
+// callAnthropic calls Claude Messages API
+func callAnthropic(ctx context.Context, apiKey, modelName, prompt string) (string, error) {
+	reqBody := apiRequest{
+		Model:     modelName,
+		MaxTokens: maxTokens,
+		Messages:  []apiMessage{{Role: "user", Content: prompt}},
+	}
+
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return "", fmt.Errorf("marshal request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", providers["anthropic"].apiURL, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return "", fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", apiKey)
+	req.Header.Set("anthropic-version", "2023-06-01")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("call API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("read response: %w", err)
+	}
+
+	var apiResp apiResponse
+	if err := json.Unmarshal(respBytes, &apiResp); err != nil {
+		return "", fmt.Errorf("parse response: %w (body: %s)", err, string(respBytes))
+	}
+
+	if apiResp.Error != nil {
+		return "", fmt.Errorf("API error: %s - %s", apiResp.Error.Type, apiResp.Error.Message)
+	}
+
+	var sb strings.Builder
+	for _, c := range apiResp.Content {
+		if c.Type == "text" {
+			sb.WriteString(c.Text)
+		}
+	}
+	return sb.String(), nil
+}
+
+// callOpenAI calls OpenAI Chat Completions API
+func callOpenAI(ctx context.Context, apiKey, modelName, prompt string) (string, error) {
+	type openAIMsg struct {
+		Role    string `json:"role"`
+		Content string `json:"content"`
+	}
+	type openAIReq struct {
+		Model    string      `json:"model"`
+		Messages []openAIMsg `json:"messages"`
+	}
+	type openAIResp struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error,omitempty"`
+	}
+
+	reqBody := openAIReq{
+		Model:    modelName,
+		Messages: []openAIMsg{{Role: "user", Content: prompt}},
+	}
+
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return "", fmt.Errorf("marshal request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", providers["openai"].apiURL, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return "", fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("call API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("read response: %w", err)
+	}
+
+	var apiResp openAIResp
+	if err := json.Unmarshal(respBytes, &apiResp); err != nil {
+		return "", fmt.Errorf("parse response: %w (body: %s)", err, string(respBytes))
+	}
+
+	if apiResp.Error != nil {
+		return "", fmt.Errorf("API error: %s", apiResp.Error.Message)
+	}
+
+	if len(apiResp.Choices) == 0 {
+		return "", fmt.Errorf("empty response from OpenAI")
+	}
+
+	return apiResp.Choices[0].Message.Content, nil
+}
+
+// callGemini calls Google Gemini generateContent API
+func callGemini(ctx context.Context, apiKey, modelName, prompt string) (string, error) {
+	type geminiPart struct {
+		Text string `json:"text"`
+	}
+	type geminiContent struct {
+		Parts []geminiPart `json:"parts"`
+	}
+	type geminiReq struct {
+		Contents []geminiContent `json:"contents"`
+	}
+	type geminiResp struct {
+		Candidates []struct {
+			Content struct {
+				Parts []struct {
+					Text string `json:"text"`
+				} `json:"parts"`
+			} `json:"content"`
+		} `json:"candidates"`
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error,omitempty"`
+	}
+
+	reqBody := geminiReq{
+		Contents: []geminiContent{
+			{Parts: []geminiPart{{Text: prompt}}},
+		},
+	}
+
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return "", fmt.Errorf("marshal request: %w", err)
+	}
+
+	apiURL := fmt.Sprintf(providers["gemini"].apiURL, modelName) + "?key=" + apiKey
+	req, err := http.NewRequestWithContext(ctx, "POST", apiURL, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return "", fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("call API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("read response: %w", err)
+	}
+
+	var apiResp geminiResp
+	if err := json.Unmarshal(respBytes, &apiResp); err != nil {
+		return "", fmt.Errorf("parse response: %w (body: %s)", err, string(respBytes))
+	}
+
+	if apiResp.Error != nil {
+		return "", fmt.Errorf("API error: %s", apiResp.Error.Message)
+	}
+
+	if len(apiResp.Candidates) == 0 {
+		return "", fmt.Errorf("empty response from Gemini")
+	}
+
+	var sb strings.Builder
+	for _, p := range apiResp.Candidates[0].Content.Parts {
+		sb.WriteString(p.Text)
+	}
+	return sb.String(), nil
+}
+
+// callOpenRouter calls OpenRouter API (OpenAI-compatible format, supports any model)
+func callOpenRouter(ctx context.Context, apiKey, modelName, prompt string) (string, error) {
+	type orMsg struct {
+		Role    string `json:"role"`
+		Content string `json:"content"`
+	}
+	type orReq struct {
+		Model    string  `json:"model"`
+		Messages []orMsg `json:"messages"`
+	}
+	type orResp struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error,omitempty"`
+	}
+
+	reqBody := orReq{
+		Model:    modelName,
+		Messages: []orMsg{{Role: "user", Content: prompt}},
+	}
+
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return "", fmt.Errorf("marshal request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", providers["openrouter"].apiURL, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return "", fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("call API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("read response: %w", err)
+	}
+
+	var apiResp orResp
+	if err := json.Unmarshal(respBytes, &apiResp); err != nil {
+		return "", fmt.Errorf("parse response: %w (body: %s)", err, string(respBytes))
+	}
+
+	if apiResp.Error != nil {
+		return "", fmt.Errorf("API error: %s", apiResp.Error.Message)
+	}
+
+	if len(apiResp.Choices) == 0 {
+		return "", fmt.Errorf("empty response from OpenRouter")
+	}
+
+	return apiResp.Choices[0].Message.Content, nil
 }
 
 func buildPrompt(cfg *config, checklist []checklistItem, files []codeFile) string {
