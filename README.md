@@ -1,142 +1,122 @@
 # taskaudit
 
-CLI tool สำหรับ audit code ของ Go project เทียบกับ checklist โดยใช้ Claude API
+ตรวจ code ของ Go project ว่าทำครบตาม checklist หรือยัง — ใช้ Claude AI วิเคราะห์ให้
 
-## Quick Start
+## เริ่มใช้งาน
 
 ```bash
-# 1. Build
+# Build
 go build -o taskaudit
+sudo mv taskaudit /usr/local/bin/
 
-# 2. Set API key
+# ตั้ง API key (ใส่ใน .zshrc ก็ได้)
 export ANTHROPIC_API_KEY="sk-ant-..."
-
-# 3. Run (ใช้ default checklist)
-taskaudit -task "ชื่องาน" -dir ./path-to-project
 ```
 
-แค่นี้ก็ได้ผลลัพธ์ audit report บน terminal แล้ว
+## วิธีใช้
 
-## Install
+### แบบง่ายสุด — ชี้ไปที่ project แล้วบอกชื่องาน
 
 ```bash
-go build -o taskaudit
-sudo mv taskaudit /usr/local/bin/   # หรือเก็บไว้ใน path ที่ใช้สะดวก
+taskaudit -task "ชื่องาน" -dir ./my-project
 ```
 
-## Usage
+มันจะ scan code ใน `internal/` แล้วเทียบกับ checklist มาตรฐาน (model, repo, service, handler, validation, test, docs)
 
-### ใช้ default checklist (เร็วสุด)
+### อยากกำหนด checklist เอง
 
-```bash
-taskaudit -task "Planogram compare API" -dir ./planogram-service
-```
-
-tool จะใช้ checklist มาตรฐาน (model, repository, service, handler, validation, error handling, unit test, docs) ตรวจให้อัตโนมัติ
-
-### ใช้ custom checklist
-
-สร้างไฟล์ `checklist.txt` (format: `category: title` ต่อบรรทัด):
+สร้างไฟล์ `checklist.txt`:
 
 ```
 code: สร้าง model
 code: สร้าง repository
-code: สร้าง service พร้อม business logic
+code: สร้าง service
 code: สร้าง handler + routing
-code: เพิ่ม validation
-test: เขียน unit test สำหรับ service
+test: เขียน unit test
 test: เขียน integration test
-docs: เขียน comment สำคัญ
 ```
+
+แล้วรัน:
 
 ```bash
-taskaudit -task "ชื่องาน" -checklist ./checklist.txt -dir ./my-service
+taskaudit -task "ชื่องาน" -checklist ./checklist.txt -dir ./my-project
 ```
 
-### Export report
+### อยากได้ report สวยๆ
 
 ```bash
-# HTML (เปิด browser อัตโนมัติ)
-taskaudit -task "..." -dir ./my-service -html ./audit.html -open
+# HTML — เปิดใน browser เลย
+taskaudit -task "ชื่องาน" -dir ./my-project -html ./report.html -open
 
-# Markdown
-taskaudit -task "..." -dir ./my-service -md ./audit.md
+# Markdown — เอาไปแปะ PR / Notion
+taskaudit -task "ชื่องาน" -dir ./my-project -md ./report.md
 
-# JSON (pipe ต่อได้)
-taskaudit -task "..." -json | jq '.missingItems'
+# JSON — pipe ต่อได้
+taskaudit -task "ชื่องาน" -dir ./my-project -json | jq '.missingItems'
 ```
 
-### Custom scan paths
+### Project layout ไม่ standard
 
-ถ้า project layout ไม่ standard:
+บอกว่าจะ scan folder ไหน:
 
 ```bash
-taskaudit -task "..." -include "app/handlers,app/services,app/repos"
+taskaudit -task "ชื่องาน" -include "handler,service,repository,model,utils" -dir ./my-project
 ```
 
-## Flags
+## ตั้ง Alias ให้ใช้สั้นลง
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `-task` | (required) | ชื่องาน |
-| `-desc` | "" | รายละเอียดงาน |
-| `-dir` | `.` | Root directory |
-| `-checklist` | (use default) | path ไฟล์ checklist |
-| `-include` | `internal/handler,internal/service,internal/repository,internal/models` | Paths ที่จะสแกน |
-| `-tests` | `true` | รวม `_test.go` files |
-| `-json` | `false` | Output เป็น JSON |
-| `-html` | "" | Export HTML report ไปที่ path (e.g. `./audit.html`) |
-| `-md` | "" | Export Markdown report ไปที่ path (e.g. `./audit.md`) |
-| `-open` | `false` | เปิด HTML report ใน browser (ใช้คู่กับ `-html`) |
-| `-v` | `false` | Verbose |
+```bash
+# ใส่ใน .zshrc
+alias audit-task='taskaudit -include "handler,service,repository,model,utils"'
+```
 
-## Example Output
+แล้วใช้:
+
+```bash
+audit-task -task "User API" -dir ./user-service
+audit-task -task "Payment" -dir ./payment -html ./report.html -open
+```
+
+## ตัวอย่าง Output
 
 ```
 ═══ CODE AUDIT REPORT ═══
 
 📊 Summary:
-   Code มี handler/service/repository ครบตาม clean architecture แต่
-   ยังขาด unit test ทั้งหมดและ validation ที่ DTO ระดับ handler
+   Code มี handler/service/repository ครบ แต่ยังขาด unit test และ validation
 
 📈 Stats:
    ● done: 5   ● missing: 3   ● partial: 1   ● n/a: 2
 
 ✓ Checklist Results:
-   ✓ สร้าง model (internal/models)
-     เห็น PlanogramCompare struct ใน planogram.go
-   ✓ สร้าง repository layer
-     CompareRepo มี method GetByDate, BulkInsert
-   ◐ สร้าง handler + routing
-     มี handler แต่ไม่มี route registration
-   ✗ เขียน unit test (table-driven)
-     ไม่พบไฟล์ *_test.go ใน service layer
+   ✓ สร้าง model — เห็น PlanogramCompare struct
+   ✓ สร้าง repository — CompareRepo มี GetByDate, BulkInsert
+   ◐ สร้าง handler — มี handler แต่ไม่มี route registration
+   ✗ เขียน unit test — ไม่พบ *_test.go ใน service layer
 
-⚠ สิ่งที่ขาดเพิ่มเติม (ไม่อยู่ใน checklist):
+⚠ สิ่งที่ขาดเพิ่มเติม:
    [HIGH] เพิ่ม transaction handling สำหรับ bulk insert
-     planogram_repo.go ใช้ multiple INSERT แยก ควรห่อด้วย tx
    [MEDIUM] Logger context ขาด trace ID
-     ทำให้ debug ใน production ยาก
 ```
 
-## Alias (แนะนำ)
+## Flags ทั้งหมด
 
-ตั้ง alias ใน shell profile (`.zshrc` / `.bashrc`) ให้ใช้สั้นลง:
-
-```bash
-# ปรับ -include ตาม project layout ของตัวเอง
-alias audit-task='taskaudit -include "handler,service,repository,model,utils"'
-```
-
-ใช้งาน:
-
-```bash
-audit-task -task "User management API" -dir ./user-service
-audit-task -task "Payment flow" -dir ./payment -html ./report.html -open
-```
+| Flag | Default | คำอธิบาย |
+|------|---------|----------|
+| `-task` | **(ต้องใส่)** | ชื่องาน |
+| `-desc` | - | รายละเอียดเพิ่มเติม |
+| `-dir` | `.` | Root ของ project |
+| `-checklist` | built-in | ไฟล์ checklist ที่จะใช้ |
+| `-include` | `internal/*` | Folders ที่จะ scan (คั่นด้วย `,`) |
+| `-tests` | `true` | รวม `_test.go` ด้วย |
+| `-json` | `false` | Output เป็น JSON |
+| `-html` | - | Export HTML ไปที่ path |
+| `-md` | - | Export Markdown ไปที่ path |
+| `-open` | `false` | เปิด HTML ใน browser (ใช้คู่ `-html`) |
+| `-v` | `false` | แสดงรายละเอียดการ scan |
 
 ## Tips
 
-- ลองรัน `-v` ดูว่ามัน scan ไฟล์ไหนไปบ้าง ก่อนปรับ `-include`
-- ถ้า project ใหญ่มาก (50+ files) แนะนำใช้ `-include` ระบุ folder เฉพาะที่เกี่ยวกับงาน
-- รวมเข้า git pre-push hook ได้ — บล็อกการ push ถ้า audit ขึ้น MISSING ระดับ HIGH
+- ใช้ `-v` ดูว่า scan ไฟล์ไหนบ้าง ก่อนปรับ `-include`
+- Project ใหญ่ (50+ files) → ระบุ `-include` เฉพาะ folder ที่เกี่ยว
+- ใส่ใน git pre-push hook ได้ — บล็อก push ถ้ามี MISSING ระดับ HIGH
