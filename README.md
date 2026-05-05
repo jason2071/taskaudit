@@ -2,6 +2,21 @@
 
 CLI tool สำหรับ audit code ของ Go project เทียบกับ checklist โดยใช้ Claude API
 
+## Quick Start
+
+```bash
+# 1. Build
+go build -o taskaudit
+
+# 2. Set API key
+export ANTHROPIC_API_KEY="sk-ant-..."
+
+# 3. Run (ใช้ default checklist)
+taskaudit -task "ชื่องาน" -dir ./path-to-project
+```
+
+แค่นี้ก็ได้ผลลัพธ์ audit report บน terminal แล้ว
+
 ## Install
 
 ```bash
@@ -9,27 +24,21 @@ go build -o taskaudit
 sudo mv taskaudit /usr/local/bin/   # หรือเก็บไว้ใน path ที่ใช้สะดวก
 ```
 
-## Setup
-
-```bash
-export ANTHROPIC_API_KEY="sk-ant-..."
-```
-
 ## Usage
 
-### 1. Quick check (ใช้ default checklist)
+### ใช้ default checklist (เร็วสุด)
 
 ```bash
 taskaudit -task "Planogram compare API" -dir ./planogram-service
 ```
 
-### 2. ใช้ custom checklist
+tool จะใช้ checklist มาตรฐาน (model, repository, service, handler, validation, error handling, unit test, docs) ตรวจให้อัตโนมัติ
 
-สร้างไฟล์ `checklist.txt`:
+### ใช้ custom checklist
+
+สร้างไฟล์ `checklist.txt` (format: `category: title` ต่อบรรทัด):
 
 ```
-# format: category: title
-analysis: อ่าน requirement
 code: สร้าง model
 code: สร้าง repository
 code: สร้าง service พร้อม business logic
@@ -40,38 +49,29 @@ test: เขียน integration test
 docs: เขียน comment สำคัญ
 ```
 
-แล้วรัน:
-
 ```bash
-taskaudit \
-  -task "Planogram compare with PDF files" \
-  -desc "เปรียบเทียบ planogram_scm_data กับ planogram_pdf_files แล้ว classify" \
-  -checklist ./checklist.txt \
-  -dir ./planogram-service
+taskaudit -task "ชื่องาน" -checklist ./checklist.txt -dir ./my-service
 ```
 
-### 3. JSON output (สำหรับ pipe ต่อ)
+### Export report
 
 ```bash
+# HTML (เปิด browser อัตโนมัติ)
+taskaudit -task "..." -dir ./my-service -html ./audit.html -open
+
+# Markdown
+taskaudit -task "..." -dir ./my-service -md ./audit.md
+
+# JSON (pipe ต่อได้)
 taskaudit -task "..." -json | jq '.missingItems'
 ```
 
-### 4. Custom paths (project layout ไม่ standard)
+### Custom scan paths
+
+ถ้า project layout ไม่ standard:
 
 ```bash
 taskaudit -task "..." -include "app/handlers,app/services,app/repos"
-```
-
-### 5. Export HTML report
-
-```bash
-taskaudit -task "..." -dir ./my-service -html ./audit.html -open
-```
-
-### 6. Export Markdown report
-
-```bash
-taskaudit -task "..." -dir ./my-service -md ./audit.md
 ```
 
 ## Flags
@@ -117,6 +117,22 @@ taskaudit -task "..." -dir ./my-service -md ./audit.md
      planogram_repo.go ใช้ multiple INSERT แยก ควรห่อด้วย tx
    [MEDIUM] Logger context ขาด trace ID
      ทำให้ debug ใน production ยาก
+```
+
+## Alias (แนะนำ)
+
+ตั้ง alias ใน shell profile (`.zshrc` / `.bashrc`) ให้ใช้สั้นลง:
+
+```bash
+# ปรับ -include ตาม project layout ของตัวเอง
+alias audit-task='taskaudit -include "handler,service,repository,model,utils"'
+```
+
+ใช้งาน:
+
+```bash
+audit-task -task "User management API" -dir ./user-service
+audit-task -task "Payment flow" -dir ./payment -html ./report.html -open
 ```
 
 ## Tips
